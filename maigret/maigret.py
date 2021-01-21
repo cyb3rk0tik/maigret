@@ -2,6 +2,7 @@
 Maigret main module
 """
 
+import aiohttp
 import asyncio
 import csv
 import http.cookiejar as cookielib
@@ -10,27 +11,26 @@ import logging
 import os
 import platform
 import re
+import requests
 import ssl
 import sys
+import tqdm.asyncio
+import xmind
+from aiohttp_socks import ProxyConnector
 from argparse import ArgumentParser, RawDescriptionHelpFormatter
 from http.cookies import SimpleCookie
-
-import aiohttp
-from aiohttp_socks import ProxyConnector
-from python_socks import _errors as proxy_errors
-import requests
-import tqdm.asyncio
 from mock import Mock
-from socid_extractor import parse, extract
+from python_socks import _errors as proxy_errors
+from socid_extractor import parse, extract, __version__ as socid_version
 
+from .activation import ParsingActivator
 from .notify import QueryNotifyPrint
+from .report import save_csv_report, save_xmind_report, save_html_report, save_pdf_report, \
+                    generate_report_context, save_txt_report
 from .result import QueryResult, QueryStatus
 from .sites import MaigretDatabase, MaigretSite
-from .report import save_csv_report, genxmindfile
 
-import xmind
-
-__version__ = '0.1.8'
+__version__ = '0.1.11'
 
 supported_recursive_search_ids = (
     'yandex_public_id',
@@ -116,7 +116,6 @@ async def update_site_dict_from_response(sitename, site_dict, results_info, sema
 
         site_dict[sitename] = process_site_result(response, query_notify, logger, results_info, site_obj)
 
-
 # TODO: move info separate module
 def detect_error_page(html_text, status_code, fail_flags, ignore_403):
     # Detect service restrictions such as a country restriction
@@ -183,11 +182,32 @@ def process_site_result(response, query_notify, logger, results_info, site: Maig
         error_text, site_error_text = detect_error_page(html_text, status_code, failure_errors,
                                                         site.ignore_403)
 
+    if site.activation and html_text:
+        is_need_activation = any([s for s in site.activation['marks'] if s in html_text])
+        if is_need_activation:
+            method = site.activation['method']
+            try:
+                activate_fun = getattr(ParsingActivator(), method)
+                # TODO: async call
+                activate_fun(site, logger)
+            except AttributeError:
+                logger.warning(f'Activation method {method} for site {site.name} not found!')
+
     # presense flags
     # True by default
     presense_flags = site.presense_strs
-    is_presense_detected = html_text and all(
-        [(presense_flag in html_text) for presense_flag in presense_flags]) or not presense_flags
+    is_presense_detected = False
+    if html_text:
+        if not presense_flags:
+            is_presense_detected = True
+            site.stats['presense_flag'] = None
+        else:
+            for presense_flag in presense_flags:
+                if presense_flag in html_text:
+                    is_presense_detected = True
+                    site.stats['presense_flag'] = presense_flag
+                    logger.info(presense_flag)
+                    break
 
     if error_text is not None:
         logger.debug(error_text)
@@ -285,9 +305,11 @@ def process_site_result(response, query_notify, logger, results_info, site: Maig
     return results_info
 
 
+
+
 async def maigret(username, site_dict, query_notify, logger,
                   proxy=None, timeout=None, recursive_search=False,
-                  id_type='username', tags=None, debug=False, forced=False,
+                  id_type='username', debug=False, forced=False,
                   max_connections=100, no_progressbar=False):
     """Main search func
 
@@ -320,15 +342,13 @@ async def maigret(username, site_dict, query_notify, logger,
     """
 
     # Notify caller that we are starting the query.
-    if tags is None:
-        tags = set()
     query_notify.start(username, id_type)
 
     # TODO: connector
     connector = ProxyConnector.from_url(proxy) if proxy else aiohttp.TCPConnector(ssl=False)
     # connector = aiohttp.TCPConnector(ssl=False)
     connector.verify_ssl=False
-    session = aiohttp.ClientSession(connector=connector)
+    session = aiohttp.ClientSession(connector=connector, trust_env=True)
 
     if logger.level == logging.DEBUG:
         future = session.get(url='https://icanhazip.com')
@@ -345,17 +365,11 @@ async def maigret(username, site_dict, query_notify, logger,
     # First create futures for all requests. This allows for the requests to run in parallel
     for site_name, site in site_dict.items():
 
-        fulltags = site.tags
-
         if site.type != id_type:
             continue
 
-        site_tags = set(fulltags)
-        if tags:
-            if not set(tags).intersection(site_tags):
-                continue
-
         if site.disabled and not forced:
+            logger.debug(f'Site {site.name} is disabled, skipping...')
             continue
 
         # Results from analysis of this specific site
@@ -365,7 +379,6 @@ async def maigret(username, site_dict, query_notify, logger,
         results_site['username'] = username
         results_site['parsing_enabled'] = recursive_search
         results_site['url_main'] = site.url_main
-
 
         headers = {
             'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 11.1; rv:55.0) Gecko/20100101 Firefox/55.0',
@@ -504,101 +517,117 @@ def timeout_check(value):
     return timeout
 
 
-async def site_self_check(site_name, site_data, logger, no_progressbar=False):
+async def site_self_check(site, logger, semaphore, db: MaigretDatabase, silent=False):
     query_notify = Mock()
     changes = {
         'disabled': False,
     }
 
-    check_data = [
-        (site_data.username_claimed, QueryStatus.CLAIMED),
-        (site_data.username_unclaimed, QueryStatus.AVAILABLE),
-    ]
+    try:
+        check_data = [
+            (site.username_claimed, QueryStatus.CLAIMED),
+            (site.username_unclaimed, QueryStatus.AVAILABLE),
+        ]
+    except:
+        print(site.__dict__)
 
-    logger.info(f'Checking {site_name}...')
+    logger.info(f'Checking {site.name}...')
 
     for username, status in check_data:
-        results = await maigret(
-            username,
-            {site_name: site_data},
-            query_notify,
-            logger,
-            timeout=30,
-            forced=True,
-            no_progressbar=no_progressbar,
-        )
+        async with semaphore:
+            results_dict = await maigret(
+                username,
+                {site.name: site},
+                query_notify,
+                logger,
+                timeout=30,
+                id_type=site.type,
+                forced=True,
+                no_progressbar=True,
+            )
 
-        # don't disable entries with other ids types
-        if site_name not in results:
-            logger.info(results)
-            changes['disabled'] = True
-            continue
+            # don't disable entries with other ids types
+            # TODO: make normal checking
+            if site.name not in results_dict:
+                logger.info(results_dict)
+                changes['disabled'] = True
+                continue
 
-        site_status = results[site_name]['status'].status
+            result = results_dict[site.name]['status']
+
+
+        site_status = result.status
+
         if site_status != status:
             if site_status == QueryStatus.UNKNOWN:
-                msgs = site_data.absence_strs
-                etype = site_data.check_type
-                logger.info(f'Error while searching {username} in {site_name}: {msgs}, type {etype}')
+                msgs = site.absence_strs
+                etype = site.check_type
+                logger.warning(f'Error while searching {username} in {site.name}: {result.context}, {msgs}, type {etype}')
                 # don't disable in case of available username
                 if status == QueryStatus.CLAIMED:
                     changes['disabled'] = True
             elif status == QueryStatus.CLAIMED:
-                logger.info(f'Not found `{username}` in {site_name}, must be claimed')
-                logger.info(results[site_name])
+                logger.warning(f'Not found `{username}` in {site.name}, must be claimed')
+                logger.info(results_dict[site.name])
                 changes['disabled'] = True
             else:
-                logger.info(f'Found `{username}` in {site_name}, must be available')
-                logger.info(results[site_name])
+                logger.warning(f'Found `{username}` in {site.name}, must be available')
+                logger.info(results_dict[site.name])
                 changes['disabled'] = True
 
-    logger.info(f'Site {site_name} checking is finished')
+    logger.info(f'Site {site.name} checking is finished')
+
+    if changes['disabled'] != site.disabled:
+        site.disabled = changes['disabled']
+        db.update_site(site)
+        if not silent:
+            action = 'Disabled' if site.disabled else 'Enabled'
+            print(f'{action} site {site.name}...')
+
     return changes
 
 
-async def self_check(json_file, logger):
-    db = MaigretDatabase()
-    db.load_from_file(json_file)
-    sites = db.sites
-    all_sites = {}
+async def self_check(db: MaigretDatabase, site_data: dict, logger, silent=False) -> bool:
+    sem = asyncio.Semaphore(10)
+    tasks = []
+    all_sites = site_data
 
-    def disabled_count(data):
-        return len(list(filter(lambda x: x.get('disabled', False), data)))
-
-    async def update_site_data(site_name, site_data, all_sites, logger):
-        updates = await site_self_check(site_name, dict(site_data), logger)
-        all_sites[site_name].update(updates)
-
-    for site in sites:
-        all_sites[site.name] = site.information
+    def disabled_count(lst):
+        return len(list(filter(lambda x: x.disabled, lst)))
 
     disabled_old_count = disabled_count(all_sites.values())
 
-    tasks = []
-    for site_name, site_data in all_sites.items():
-        future = asyncio.ensure_future(update_site_data(site_name, site_data, all_sites, logger))
+    for _, site in all_sites.items():
+        check_coro = site_self_check(site, logger, sem, db, silent)
+        future = asyncio.ensure_future(check_coro)
         tasks.append(future)
 
-    await asyncio.gather(*tasks)
+    for f in tqdm.asyncio.tqdm.as_completed(tasks):
+        await f
 
     disabled_new_count = disabled_count(all_sites.values())
     total_disabled = disabled_new_count - disabled_old_count
-    if total_disabled > 0:
+
+    if total_disabled >= 0:
         message = 'Disabled'
     else:
         message = 'Enabled'
         total_disabled *= -1
-    print(f'{message} {total_disabled} checked sites. Run with `--info` flag to get more information')
 
-    with open(json_file, 'w') as f:
-        data['sites'] = all_sites
-        json.dump(data, f, indent=4)
+    if not silent:
+        print(f'{message} {total_disabled} ({disabled_old_count} => {disabled_new_count}) checked sites. Run with `--info` flag to get more information')
+
+    return total_disabled != 0
 
 
 async def main():
-    version_string = f"%(prog)s {__version__}\n" + \
-                     f"{requests.__description__}:  {requests.__version__}\n" + \
-                     f"Python:  {platform.python_version()}"
+    version_string = '\n'.join([
+        f'%(prog)s {__version__}',
+        f'Socid-extractor:  {socid_version}',
+        f'Aiohttp:  {aiohttp.__version__}',
+        f'Requests:  {requests.__version__}',
+        f'Python:  {platform.python_version()}',
+    ])
 
     parser = ArgumentParser(formatter_class=RawDescriptionHelpFormatter,
                             description=f"Maigret v{__version__}"
@@ -607,7 +636,7 @@ async def main():
                         action="version", version=version_string,
                         help="Display version information and dependencies."
                         )
-    parser.add_argument("--info",
+    parser.add_argument("--info", "-vv",
                         action="store_true", dest="info", default=False,
                         help="Display service information."
                         )
@@ -615,23 +644,13 @@ async def main():
                         action="store_true", dest="verbose", default=False,
                         help="Display extra information and metrics."
                         )
-    parser.add_argument("-d", "--debug",
+    parser.add_argument("-d", "--debug", "-vvv",
                         action="store_true", dest="debug", default=False,
                         help="Saving debugging information and sites responses in debug.txt."
                         )
-    parser.add_argument("--rank", "-r",
-                        action="store_true", dest="rank", default=False,
-                        help="Present websites ordered by their Alexa.com global rank in popularity.")
-    parser.add_argument("--folderoutput", "-fo", dest="folderoutput", default="reports",
-                        help="If using multiple usernames, the output of the results will be saved to this folder."
-                        )
-    parser.add_argument("--csv",
-                        action="store_true", dest="csv", default=False,
-                        help="Create Comma-Separated Values (CSV) File."
-                        )
     parser.add_argument("--site",
                         action="append", metavar='SITE_NAME',
-                        dest="site_list", default=None,
+                        dest="site_list", default=[],
                         help="Limit analysis to just the listed sites (use several times to specify more than one)"
                         )
     parser.add_argument("--proxy", "-p", metavar='PROXY_URL',
@@ -648,6 +667,19 @@ async def main():
                              "Default timeout of 10.0s."
                              "A longer timeout will be more likely to get results from slow sites."
                              "On the other hand, this may cause a long delay to gather all results."
+                        )
+    parser.add_argument("-n", "--max-connections",
+                        action="store", type=int,
+                        dest="connections", default=100,
+                        help="Allowed number of concurrent connections."
+                        )
+    parser.add_argument("-a", "--all-sites",
+                        action="store_true", dest="all_sites", default=False,
+                        help="Use all sites for scan."
+                        )
+    parser.add_argument("--top-sites",
+                        action="store", default=500, type=int,
+                        help="Count of sites for scan ranked by Alexa Top (default: 500)."
                         )
     parser.add_argument("--print-not-found",
                         action="store_true", dest="print_not_found", default=False,
@@ -681,6 +713,10 @@ async def main():
                         dest="parse_url", default='',
                         help="Parse page by URL and extract username and IDs to use for search."
                         )
+    parser.add_argument("--id-type",
+                        dest="id_type", default='username',
+                        help="Specify identifier(s) type (default: username)."
+                        )
     parser.add_argument("username",
                         nargs='+', metavar='USERNAMES',
                         action="store",
@@ -690,11 +726,31 @@ async def main():
                         dest="tags", default='',
                         help="Specify tags of sites."
                         )
-
-    parser.add_argument("-x","--xmind",
+    # reports options
+    parser.add_argument("--folderoutput", "-fo", dest="folderoutput", default="reports",
+                        help="If using multiple usernames, the output of the results will be saved to this folder."
+                        )
+    parser.add_argument("-T", "--txt",
+                        action="store_true", dest="txt", default=False,
+                        help="Create a TXT report (one report per username)."
+                        )
+    parser.add_argument("-C", "--csv",
+                        action="store_true", dest="csv", default=False,
+                        help="Create a CSV report (one report per username)."
+                        )
+    parser.add_argument("-H", "--html",
+                        action="store_true", dest="html", default=False,
+                        help="Create an HTML report file (general report on all usernames)."
+                        )
+    parser.add_argument("-X","--xmind",
                         action="store_true",
                         dest="xmind", default=False,
-                        help="Generate an xmind 8 mindmap"
+                        help="Generate an XMind 8 mindmap report (one report per username)."
+                        )
+    parser.add_argument("-P", "--pdf",
+                        action="store_true",
+                        dest="pdf", default=False,
+                        help="Generate a PDF report (general report on all usernames)."
                         )
 
     args = parser.parse_args()
@@ -719,7 +775,7 @@ async def main():
 
     # Usernames initial list
     usernames = {
-        u: 'username'
+        u: args.id_type
         for u in args.username
         if u not in ['-']
     }
@@ -742,7 +798,7 @@ async def main():
                 usernames[v] = k
 
     if args.tags:
-        args.tags = set(str(args.tags).split(','))
+        args.tags = list(set(str(args.tags).split(',')))
 
     if args.json_file is None:
         args.json_file = \
@@ -750,51 +806,48 @@ async def main():
                          "resources/data.json"
                          )
 
-    # Database self-checking
-    if args.self_check:
-        print('Maigret sites database self-checking...')
-        await self_check(args.json_file, logger)
+    if args.top_sites == 0 or args.all_sites:
+        args.top_sites = sys.maxsize
 
     # Create object with all information about sites we are aware of.
     try:
-        site_data_all = MaigretDatabase().load_from_file(args.json_file).sites_dict
+        db = MaigretDatabase().load_from_file(args.json_file)
+        site_data = db.ranked_sites_dict(top=args.top_sites, tags=args.tags, names=args.site_list)
     except Exception as error:
         print(f"ERROR:  {error}")
         sys.exit(1)
 
-    if args.site_list is None:
-        # Not desired to look at a sub-set of sites
-        site_data = site_data_all
-    else:
-        # User desires to selectively run queries on a sub-set of the site list.
+    # Database self-checking
+    if args.self_check:
+        print('Maigret sites database self-checking...')
+        is_need_update = await self_check(db, site_data, logger)
+        if is_need_update:
+            if input('Do you want to save changes permanently? [yYnN]\n').lower() == 'y':
+                db.save_to_file(args.json_file)
+                print('Database was successfully updated.')
+            else:
+                print('Updates will be applied only for current search session.')
+        print(db.get_stats(site_data))
 
-        # Make sure that the sites are supported & build up pruned site database.
-        site_data = {}
-        site_missing = []
-        for site in args.site_list:
-            for existing_site in site_data_all:
-                if site.lower() == existing_site.lower():
-                    site_data[existing_site] = site_data_all[existing_site]
-            if not site_data:
-                # Build up list of sites not supported for future error message.
-                site_missing.append(f"'{site}'")
+    # Make reports folder is not exists
+    os.makedirs(args.folderoutput, exist_ok=True)
+    report_path = args.folderoutput
 
-        if site_missing:
-            print(
-                f"Error: Desired sites not found: {', '.join(site_missing)}.")
-            sys.exit(1)
-
-    if args.rank:
-        # Sort data by rank
-        site_dataCpy = dict(site_data)
-        ranked_sites = sorted(site_data, key=lambda k: ("rank" not in k, site_data[k].get("rank", sys.maxsize)))
-        site_data = {}
-        for site in ranked_sites:
-            site_data[site] = site_dataCpy.get(site)
+    # Define one report filename template
+    report_filepath_tpl = os.path.join(args.folderoutput, 'report_{username}{postfix}')
 
     # Database consistency
     enabled_count = len(list(filter(lambda x: not x.disabled, site_data.values())))
     print(f'Sites in database, enabled/total: {enabled_count}/{len(site_data)}')
+
+    if not enabled_count:
+        print('No sites to check, exiting!')
+        sys.exit(2)
+
+    if usernames == ['-']:
+        # magic params to exit after init
+        print('No usernames to check, exiting.')
+        sys.exit(0)
 
     # Create notify object for query results.
     query_notify = QueryNotifyPrint(result=None,
@@ -804,6 +857,8 @@ async def main():
                                     color=not args.no_color)
 
     already_checked = set()
+
+    general_results = []
 
     while usernames:
         username, id_type = list(usernames.items())[0]
@@ -829,46 +884,61 @@ async def main():
                                 timeout=args.timeout,
                                 recursive_search=recursive_search_enabled,
                                 id_type=id_type,
-                                tags=args.tags,
                                 debug=args.verbose,
                                 logger=logger,
                                 forced=args.use_disabled_sites,
+                                max_connections=args.connections,
                                 )
 
-        if args.folderoutput:
-            # The usernames results should be stored in a targeted folder.
-            # If the folder doesn't exist, create it first
-            os.makedirs(args.folderoutput, exist_ok=True)
-            result_file = os.path.join(args.folderoutput, f"{username}.txt")
-            if args.xmind:
-                xmind_path = os.path.join(args.folderoutput, f"{username}.xmind")
-        else:
-            result_file = f"{username}.txt"
-            if args.xmind:
-                xmind_path = f"{username}.xmind"
+        username_result = (username, id_type, results)
+        general_results.append((username, id_type, results))
 
+        # TODO: tests
+        for website_name in results:
+            dictionary = results[website_name]
+            # TODO: fix no site data issue
+            if not dictionary:
+                continue
+            new_usernames = dictionary.get('ids_usernames')
+            if new_usernames:
+                for u, utype in new_usernames.items():
+                    usernames[u] = utype
+
+        # reporting for a one username
         if args.xmind:
-            genxmindfile(xmind_path, username, results)
-
-        with open(result_file, "w", encoding="utf-8") as file:
-            exists_counter = 0
-            for website_name in results:
-                dictionary = results[website_name]
-                # TODO: fix no site data issue
-                if not dictionary:
-                    continue
-                new_usernames = dictionary.get('ids_usernames')
-                if new_usernames:
-                    for u, utype in new_usernames.items():
-                        usernames[u] = utype
-
-                if dictionary.get("status").status == QueryStatus.CLAIMED:
-                    exists_counter += 1
-                    file.write(dictionary["url_user"] + "\n")
-            file.write(f"Total Websites Username Detected On : {exists_counter}")
+            filename = report_filepath_tpl.format(username=username, postfix='.xmind')
+            save_xmind_report(filename, username, results)
+            print(f'XMind report for {username} saved in {filename}')
 
         if args.csv:
-            save_csv_report(username, results)
+            filename = report_filepath_tpl.format(username=username, postfix='.csv')
+            save_csv_report(filename, username, results)
+            print(f'CSV report for {username} saved in {filename}')
+
+        if args.txt:
+            filename = report_filepath_tpl.format(username=username, postfix='.txt')
+            save_txt_report(filename, username, results)
+            print(f'TXT report for {username} saved in {filename}')
+
+    # reporting for all the result
+    if general_results:
+        if args.html or args.pdf:
+            print('Generating report info...')
+        report_context = generate_report_context(general_results)
+        # determine main username
+        username = report_context['username']
+
+        if args.html:
+            filename = report_filepath_tpl.format(username=username, postfix='.html')
+            save_html_report(filename, report_context)
+            print(f'HTML report on all usernames saved in {filename}')
+
+        if args.pdf:
+            filename = report_filepath_tpl.format(username=username, postfix='.pdf')
+            save_pdf_report(filename, report_context)
+            print(f'PDF report on all usernames saved in {filename}')
+    # update database
+    db.save_to_file(args.json_file)
 
 
 def run():
@@ -878,7 +948,6 @@ def run():
     except KeyboardInterrupt:
         print('Maigret is interrupted.')
         sys.exit(1)
-
 
 if __name__ == "__main__":
     run()

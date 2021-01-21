@@ -1,6 +1,8 @@
 # Maigret
 
-![PyPI](https://img.shields.io/pypi/v/maigret?style=flat-square) ![PyPI - Downloads](https://img.shields.io/pypi/dw/maigret?style=flat-square)
+![PyPI](https://img.shields.io/pypi/v/maigret?style=flat-square)
+![PyPI - Downloads](https://img.shields.io/pypi/dw/maigret?style=flat-square)
+[![Chat - Gitter](./static/chat_gitter.svg)](https://gitter.im/maigret-osint/community)
 
 <p align="center">
   <img src="./static/maigret.png" />
@@ -15,7 +17,7 @@ Purpose of Maigret - **collect a dossier on a person by username only**, checkin
 This is a [sherlock](https://github.com/sherlock-project/) fork with cool features under heavy development.
 *Don't forget to regularly update source code from repo*.
 
-Currently supported more than 1500 sites ([full list](./sites.md)).
+Currently supported more than 2000 sites ([full list](./sites.md)), by default search is launched against 500 popular sites in descending order of popularity.
 
 ## Main features
 
@@ -27,7 +29,7 @@ Currently supported more than 1500 sites ([full list](./sites.md)).
 
 ## Installation
 
-**NOTE**: Python 3.7 or higher and pip is required.
+**NOTE**: Python 3.6 or higher and pip is required.
 
 **Python 3.8 is recommended.**
 
@@ -45,8 +47,19 @@ $ pip3 install .
 ```bash
 maigret user
 
-maigret user1 user2 user3 --print-not-found
+# make HTML and PDF reports
+maigret user --html --pdf
+
+# search on sites marked with tags photo & dating
+maigret user --tags photo,dating
+
+
+# search for three usernames on all available sites
+maigret user1 user2 user3 -a
+
 ```
+
+Run `maigret --help` to get arguments description. Also options are documented in [the Maigret Wiki](https://github.com/soxoj/maigret/wiki/Command-line-options).
 
 With Docker:
 ```
@@ -57,13 +70,20 @@ docker run maigret user
 
 ## Demo with page parsing and recursive username search
 
+[PDF report](./static/report_alexaimephotographycars.pdf), [HTML report](https://htmlpreview.github.io/?https://raw.githubusercontent.com/soxoj/maigret/main/static/report_alexaimephotographycars.html)
+
 ```bash
 maigret alexaimephotographycars
 ```
 
 ![animation of recursive search](./static/recursive_search.svg)
 
-[Full output](./static/recursive_search.md)
+![HTML report screenshot](./static/report_alexaimephotography_html_screenshot.png)
+
+![XMind report screenshot](./static/report_alexaimephotography_xmind_screenshot.png)
+
+
+[Full console output](./static/recursive_search.md)
 
 ## License
 

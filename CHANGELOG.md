@@ -2,6 +2,21 @@
 
 ## [Unreleased]
 
+## [0.1.11] - 2021-01-16
+* tags and custom data checks bugfixes
+* added parsing activation logic
+
+## [0.1.10] - 2021-01-13
+* added report static resources into package
+
+## [0.1.9] - 2021-01-11
+* added HTML and PDF report export
+* fixed support of Python 3.6
+* fixed tags filtering and ranking
+* more than 2000 sites supported
+* refactored sites and engines logic
+* added tests
+
 ## [0.1.8] - 2020-12-31
 * added XMind export
 * more than 1500 sites supported
