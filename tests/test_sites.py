@@ -1,33 +1,32 @@
 """Maigret Database test functions"""
 from maigret.sites import MaigretDatabase, MaigretSite
 
-
 EXAMPLE_DB = {
     'engines': {
         "XenForo": {
-          "presenseStrs": ["XenForo"],
-          "site": {
-            "absenceStrs": [
-              "The specified member cannot be found. Please enter a member's entire name.",
-            ],
-            "checkType": "message",
-            "errors": {
-              "You must be logged-in to do that.": "Login required"
-            },
-            "url": "{urlMain}{urlSubpath}/members/?username={username}"
-          }
+            "presenseStrs": ["XenForo"],
+            "site": {
+                "absenceStrs": [
+                    "The specified member cannot be found. Please enter a member's entire name.",
+                ],
+                "checkType": "message",
+                "errors": {
+                    "You must be logged-in to do that.": "Login required"
+                },
+                "url": "{urlMain}{urlSubpath}/members/?username={username}"
+            }
         },
     },
     'sites': {
         "Amperka": {
-          "engine": "XenForo",
-          "rank": 121613,
-          "tags": [
-            "ru"
-          ],
-          "urlMain": "http://forum.amperka.ru",
-          "usernameClaimed": "adam",
-          "usernameUnclaimed": "noonewouldeverusethis7"
+            "engine": "XenForo",
+            "rank": 121613,
+            "tags": [
+                "ru"
+            ],
+            "urlMain": "http://forum.amperka.ru",
+            "usernameClaimed": "adam",
+            "usernameUnclaimed": "noonewouldeverusethis7"
         },
     }
 }
@@ -113,6 +112,14 @@ def test_saving_site_error():
     assert amperka.strip_engine_data().json['errors'] == {'error1': 'text1'}
 
 
+def test_site_url_detector():
+    db = MaigretDatabase()
+    db.load_from_json(EXAMPLE_DB)
+
+    assert db.sites[0].url_regexp.pattern == r'^https?://(www.)?forum\.amperka\.ru/members/\?username=(.+?)$'
+    assert db.sites[0].detect_username('http://forum.amperka.ru/members/?username=test') == 'test'
+
+
 def test_ranked_sites_dict():
     db = MaigretDatabase()
     db.update_site(MaigretSite('3', {'alexaRank': 1000, 'engine': 'ucoz'}))
@@ -131,13 +138,41 @@ def test_ranked_sites_dict():
     # filtering by engine
     assert list(db.ranked_sites_dict(tags=['ucoz']).keys()) == ['3']
 
+    # disjunction
+    assert list(db.ranked_sites_dict(names=['2'], tags=['forum']).keys()) == ['2']
+    assert list(db.ranked_sites_dict(names=['2'], tags=['ucoz']).keys()) == []
+    assert list(db.ranked_sites_dict(names=['4'], tags=['ru']).keys()) == []
+
+    # reverse
+    assert list(db.ranked_sites_dict(reverse=True).keys()) == ['3', '2', '1']
+
+
+def test_ranked_sites_dict_names():
+    db = MaigretDatabase()
+    db.update_site(MaigretSite('3', {'alexaRank': 30}))
+    db.update_site(MaigretSite('1', {'alexaRank': 2}))
+    db.update_site(MaigretSite('2', {'alexaRank': 10}))
+
     # filtering by names
     assert list(db.ranked_sites_dict(names=['1', '2']).keys()) == ['1', '2']
     assert list(db.ranked_sites_dict(names=['2', '3']).keys()) == ['2', '3']
 
-    # disjunction
-    assert list(db.ranked_sites_dict(names=['2'], tags=['forum']).keys()) == ['1', '2']
-    assert list(db.ranked_sites_dict(names=['2'], tags=['forum'], reverse=True).keys()) == ['2', '1']
-    assert list(db.ranked_sites_dict(names=['2'], tags=['ucoz']).keys()) == ['2', '3']
-    assert list(db.ranked_sites_dict(names=['4'], tags=['ru']).keys()) == ['2']
-    assert list(db.ranked_sites_dict(names=['4'], tags=['nosuchtag']).keys()) == []
+
+def test_ranked_sites_dict_disabled():
+    db = MaigretDatabase()
+    db.update_site(MaigretSite('1', {'disabled': True}))
+    db.update_site(MaigretSite('2', {}))
+
+    assert len(db.ranked_sites_dict()) == 2
+    assert len(db.ranked_sites_dict(disabled=False)) == 1
+
+
+def test_ranked_sites_dict_id_type():
+    db = MaigretDatabase()
+    db.update_site(MaigretSite('1', {}))
+    db.update_site(MaigretSite('2', {'type': 'username'}))
+    db.update_site(MaigretSite('3', {'type': 'gaia_id'}))
+
+    assert len(db.ranked_sites_dict()) == 2
+    assert len(db.ranked_sites_dict(id_type='username')) == 2
+    assert len(db.ranked_sites_dict(id_type='gaia_id')) == 1

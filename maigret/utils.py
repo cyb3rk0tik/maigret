@@ -29,3 +29,50 @@ def enrich_link_str(link: str) -> str:
     if link.startswith('www.') or (link.startswith('http') and '//' in link):
         return f'<a class="auto-link" href="{link}">{link}</a>'
     return link
+
+
+class URLMatcher:
+    _HTTP_URL_RE_STR = '^https?://(www.)?(.+)$'
+    HTTP_URL_RE = re.compile(_HTTP_URL_RE_STR)
+    UNSAFE_SYMBOLS = '.?'
+
+    @classmethod
+    def extract_main_part(self, url: str) -> str:
+        match = self.HTTP_URL_RE.search(url)
+        if match and match.group(2):
+            return match.group(2).rstrip('/')
+
+        return ''
+
+    @classmethod
+    def make_profile_url_regexp(self, url: str, username_regexp: str = ''):
+        url_main_part = self.extract_main_part(url)
+        for c in self.UNSAFE_SYMBOLS:
+            url_main_part = url_main_part.replace(c, f'\\{c}')
+        username_regexp = username_regexp or '.+?'
+
+        url_regexp = url_main_part.replace('{username}', f'({username_regexp})')
+        regexp_str = self._HTTP_URL_RE_STR.replace('(.+)', url_regexp)
+
+        return re.compile(regexp_str)
+
+
+def get_dict_ascii_tree(items, prepend='', new_line=True):
+    text = ''
+    for num, item in enumerate(items):
+        box_symbol = '┣╸' if num != len(items) - 1 else '┗╸'
+
+        if type(item) == tuple:
+            field_name, field_value = item
+            if field_value.startswith('[\''):
+                is_last_item = num == len(items) - 1
+                prepend_symbols = ' ' * 3 if is_last_item else ' ┃ '
+                field_value = get_dict_ascii_tree(eval(field_value), prepend_symbols)
+            text += f'\n{prepend}{box_symbol}{field_name}: {field_value}'
+        else:
+            text += f'\n{prepend}{box_symbol} {item}'
+
+    if not new_line:
+        text = text[1:]
+
+    return text

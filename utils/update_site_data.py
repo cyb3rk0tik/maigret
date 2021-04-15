@@ -20,43 +20,48 @@ RANKS.update({
     '5000': '5K',
     '10000': '10K',
     '100000': '100K',
-    '10000000': '1M',
-    '50000000': '10M',
+    '10000000': '10M',
+    '50000000': '50M',
+    '100000000': '100M',
 })
 
+SEMAPHORE = threading.Semaphore(10)
+
 def get_rank(domain_to_query, site, print_errors=True):
-    #Retrieve ranking data via alexa API
-    url = f"http://data.alexa.com/data?cli=10&url={domain_to_query}"
-    xml_data = requests.get(url).text
-    root = ET.fromstring(xml_data)
+    with SEMAPHORE:
+        #Retrieve ranking data via alexa API
+        url = f"http://data.alexa.com/data?cli=10&url={domain_to_query}"
+        xml_data = requests.get(url).text
+        root = ET.fromstring(xml_data)
 
-    try:
-        #Get ranking for this site.
-        site.alexa_rank = int(root.find('.//REACH').attrib['RANK'])
-        country = root.find('.//COUNTRY')
-        if not country is None and country.attrib:
-            country_code = country.attrib['CODE']
-            tags = set(site.tags)
-            if country_code:
-                tags.add(country_code.lower())
-            site.tags = sorted(list(tags))
-            if site.type != 'username':
-                site.disabled = False
-    except Exception as e:
-        if print_errors:
-            logging.error(e)
-            # We did not find the rank for some reason.
-            print(f"Error retrieving rank information for '{domain_to_query}'")
-            print(f"     Returned XML is |{xml_data}|")
+        try:
+            #Get ranking for this site.
+            site.alexa_rank = int(root.find('.//REACH').attrib['RANK'])
+            country = root.find('.//COUNTRY')
+            if not country is None and country.attrib:
+                country_code = country.attrib['CODE']
+                tags = set(site.tags)
+                if country_code:
+                    tags.add(country_code.lower())
+                site.tags = sorted(list(tags))
+                if site.type != 'username':
+                    site.disabled = False
+        except Exception as e:
+            if print_errors:
+                logging.error(e)
+                # We did not find the rank for some reason.
+                print(f"Error retrieving rank information for '{domain_to_query}'")
+                print(f"     Returned XML is |{xml_data}|")
 
-    return
+        return
 
 
 def get_step_rank(rank):
     def get_readable_rank(r):
         return RANKS[str(r)]
+
     valid_step_ranks = sorted(map(int, RANKS.keys()))
-    if rank == 0:
+    if rank == 0 or rank == sys.maxsize:
         return get_readable_rank(valid_step_ranks[-1])
     else:
         return get_readable_rank(list(filter(lambda x: x >= rank, valid_step_ranks))[0])
@@ -70,6 +75,8 @@ if __name__ == '__main__':
                         help="JSON file with sites data to update.")
 
     parser.add_argument('--empty-only', help='update only sites without rating', action='store_true')
+    parser.add_argument('--exclude-engine', help='do not update score with certain engine',
+                        action="append", dest="exclude_engine_list", default=[])
 
     pool = list()
 
@@ -88,6 +95,8 @@ Rank data fetched from Alexa by domains.
         for site in sites_subset:
             url_main = site.url_main
             if site.alexa_rank < sys.maxsize and args.empty_only:
+                continue
+            if args.exclude_engine_list and site.engine in args.exclude_engine_list:
                 continue
             site.alexa_rank = 0
             th = threading.Thread(target=get_rank, args=(url_main, site))
@@ -118,7 +127,9 @@ Rank data fetched from Alexa by domains.
             note = ''
             if site.disabled:
                 note = ', search is disabled'
-            site_file.write(f'1. [{site}]({url_main})*: top {valid_rank}{tags}*{note}\n')
+
+            favicon = f"![](https://www.google.com/s2/favicons?domain={url_main})"
+            site_file.write(f'1. {favicon} [{site}]({url_main})*: top {valid_rank}{tags}*{note}\n')
             db.update_site(site)
 
         site_file.write(f'\nAlexa.com rank data fetched at ({datetime.utcnow()} UTC)\n')

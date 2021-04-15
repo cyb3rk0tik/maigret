@@ -33,20 +33,43 @@ Currently supported more than 2000 sites ([full list](./sites.md)), by default s
 
 **Python 3.8 is recommended.**
 
+### Package installing
 ```bash
 # install from pypi
-$ pip3 install maigret
+pip3 install maigret
 
 # or clone and install manually
-$ git clone https://github.com/soxoj/maigret && cd maigret
-$ pip3 install .
+git clone https://github.com/soxoj/maigret && cd maigret
+pip3 install .
+```
+
+### Cloning a repository
+
+```bash
+git clone https://github.com/soxoj/maigret && cd maigret
+```
+
+You can use your a free virtual machine, the repo will be automatically cloned:
+
+[![Open in Cloud Shell](https://user-images.githubusercontent.com/27065646/92304704-8d146d80-ef80-11ea-8c29-0deaabb1c702.png)](https://console.cloud.google.com/cloudshell/open?git_repo=https://github.com/soxoj/maigret&tutorial=README.md) [![Run on Repl.it](https://user-images.githubusercontent.com/27065646/92304596-bf719b00-ef7f-11ea-987f-2c1f3c323088.png)](https://repl.it/github/soxoj/maigret)
+<a href="https://colab.research.google.com/gist//soxoj/879b51bc3b2f8b695abb054090645000/maigret.ipynb"><img src="https://colab.research.google.com/assets/colab-badge.svg" alt="Open In Colab" height="40"></a>
+
+```bash
+pip3 install -r requirements.txt
 ```
 
 ## Using examples
 
 ```bash
-maigret user
+# for a cloned repo
+./maigret.py user
 
+# for a package
+maigret user
+```
+
+Features:
+```bash
 # make HTML and PDF reports
 maigret user --html --pdf
 
@@ -63,18 +86,16 @@ Run `maigret --help` to get arguments description. Also options are documented i
 
 With Docker:
 ```
-docker build -t maigret .
+# manual build
+docker build -t maigret . && docker run maigret user
 
-docker run maigret user
+# official image
+docker run soxoj/maigret:latest user
 ```
 
 ## Demo with page parsing and recursive username search
 
 [PDF report](./static/report_alexaimephotographycars.pdf), [HTML report](https://htmlpreview.github.io/?https://raw.githubusercontent.com/soxoj/maigret/main/static/report_alexaimephotographycars.html)
-
-```bash
-maigret alexaimephotographycars
-```
 
 ![animation of recursive search](./static/recursive_search.svg)
 
