@@ -22,9 +22,12 @@ src/
 # Comma-Separated Values (CSV) Reports
 *.csv
 
-# Excluded sites list
-tests/.excluded_sites
-
 # MacOS Folder Metadata File
 .DS_Store
 /reports/
+
+# Testing
+.coverage
+dist/
+htmlcov/
+/test_*

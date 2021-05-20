@@ -37,15 +37,15 @@ def get_rank(domain_to_query, site, print_errors=True):
         try:
             #Get ranking for this site.
             site.alexa_rank = int(root.find('.//REACH').attrib['RANK'])
-            country = root.find('.//COUNTRY')
-            if not country is None and country.attrib:
-                country_code = country.attrib['CODE']
-                tags = set(site.tags)
-                if country_code:
-                    tags.add(country_code.lower())
-                site.tags = sorted(list(tags))
-                if site.type != 'username':
-                    site.disabled = False
+            # country = root.find('.//COUNTRY')
+            # if not country is None and country.attrib:
+            #     country_code = country.attrib['CODE']
+            #     tags = set(site.tags)
+            #     if country_code:
+            #         tags.add(country_code.lower())
+            #     site.tags = sorted(list(tags))
+            #     if site.type != 'username':
+            #         site.disabled = False
         except Exception as e:
             if print_errors:
                 logging.error(e)
@@ -74,6 +74,7 @@ if __name__ == '__main__':
                         dest="base_file", default="maigret/resources/data.json",
                         help="JSON file with sites data to update.")
 
+    parser.add_argument('--with-rank', help='update with use of local data only', action='store_true')
     parser.add_argument('--empty-only', help='update only sites without rating', action='store_true')
     parser.add_argument('--exclude-engine', help='do not update score with certain engine',
                         action="append", dest="exclude_engine_list", default=[])
@@ -87,28 +88,31 @@ if __name__ == '__main__':
 
     with open("sites.md", "w") as site_file:
         site_file.write(f"""
-## List of supported sites: total {len(sites_subset)}\n
+## List of supported sites (search methods): total {len(sites_subset)}\n
 Rank data fetched from Alexa by domains.
 
 """)
 
         for site in sites_subset:
+            if not args.with_rank:
+                break
             url_main = site.url_main
             if site.alexa_rank < sys.maxsize and args.empty_only:
                 continue
             if args.exclude_engine_list and site.engine in args.exclude_engine_list:
                 continue
             site.alexa_rank = 0
-            th = threading.Thread(target=get_rank, args=(url_main, site))
+            th = threading.Thread(target=get_rank, args=(url_main, site,))
             pool.append((site.name, url_main, th))
             th.start()
 
-        index = 1
-        for site_name, url_main, th in pool:
-            th.join()
-            sys.stdout.write("\r{0}".format(f"Updated {index} out of {len(sites_subset)} entries"))
-            sys.stdout.flush()
-            index = index + 1
+        if args.with_rank:
+            index = 1
+            for site_name, url_main, th in pool:
+                th.join()
+                sys.stdout.write("\r{0}".format(f"Updated {index} out of {len(sites_subset)} entries"))
+                sys.stdout.flush()
+                index = index + 1
 
         sites_full_list = [(s, s.alexa_rank) for s in sites_subset]
 
@@ -123,6 +127,7 @@ Rank data fetched from Alexa by domains.
             url_main = site.url_main
             valid_rank = get_step_rank(rank)
             all_tags = site.tags
+            all_tags.sort()
             tags = ', ' + ', '.join(all_tags) if all_tags else ''
             note = ''
             if site.disabled:

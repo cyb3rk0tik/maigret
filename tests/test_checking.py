@@ -1,66 +1,65 @@
-"""Maigret checking logic test functions"""
+from mock import Mock
 import pytest
-import asyncio
-import logging
-from maigret.checking import AsyncioSimpleExecutor, AsyncioProgressbarExecutor, AsyncioProgressbarSemaphoreExecutor, AsyncioProgressbarQueueExecutor
 
-logger = logging.getLogger(__name__)
+from maigret import search
 
-async def func(n):
-    await asyncio.sleep(0.1 * (n % 3))
-    return n
+
+def site_result_except(server, username, **kwargs):
+    query = f'id={username}'
+    server.expect_request('/url', query_string=query).respond_with_data(**kwargs)
 
 
 @pytest.mark.asyncio
-async def test_simple_asyncio_executor():
-    tasks = [(func, [n], {}) for n in range(10)]
-    executor = AsyncioSimpleExecutor(logger=logger)
-    assert await executor.run(tasks) == [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
-    assert executor.execution_time > 0.2
-    assert executor.execution_time < 0.3
+async def test_checking_by_status_code(httpserver, local_test_db):
+    sites_dict = local_test_db.sites_dict
 
-@pytest.mark.asyncio
-async def test_asyncio_progressbar_executor():
-    tasks = [(func, [n], {}) for n in range(10)]
+    site_result_except(httpserver, 'claimed', status=200)
+    site_result_except(httpserver, 'unclaimed', status=404)
 
-    executor = AsyncioProgressbarExecutor(logger=logger)
-    # no guarantees for the results order
-    assert sorted(await executor.run(tasks)) == [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
-    assert executor.execution_time > 0.2
-    assert executor.execution_time < 0.3
+    result = await search('claimed', site_dict=sites_dict, logger=Mock())
+    assert result['StatusCode']['status'].is_found() is True
+
+    result = await search('unclaimed', site_dict=sites_dict, logger=Mock())
+    assert result['StatusCode']['status'].is_found() is False
 
 
 @pytest.mark.asyncio
-async def test_asyncio_progressbar_semaphore_executor():
-    tasks = [(func, [n], {}) for n in range(10)]
+async def test_checking_by_message_positive_full(httpserver, local_test_db):
+    sites_dict = local_test_db.sites_dict
 
-    executor = AsyncioProgressbarSemaphoreExecutor(logger=logger, in_parallel=5)
-    # no guarantees for the results order
-    assert sorted(await executor.run(tasks)) == [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
-    assert executor.execution_time > 0.2
-    assert executor.execution_time < 0.4
+    site_result_except(httpserver, 'claimed', response_data="user profile")
+    site_result_except(httpserver, 'unclaimed', response_data="404 not found")
+
+    result = await search('claimed', site_dict=sites_dict, logger=Mock())
+    assert result['Message']['status'].is_found() is True
+
+    result = await search('unclaimed', site_dict=sites_dict, logger=Mock())
+    assert result['Message']['status'].is_found() is False
 
 
 @pytest.mark.asyncio
-async def test_asyncio_progressbar_queue_executor():
-    tasks = [(func, [n], {}) for n in range(10)]
+async def test_checking_by_message_positive_part(httpserver, local_test_db):
+    sites_dict = local_test_db.sites_dict
 
-    executor = AsyncioProgressbarQueueExecutor(logger=logger, in_parallel=2)
-    assert await executor.run(tasks) == [0, 1, 3, 2, 4, 6, 7, 5, 9, 8]
-    assert executor.execution_time > 0.5
-    assert executor.execution_time < 0.6
+    site_result_except(httpserver, 'claimed', response_data="profile")
+    site_result_except(httpserver, 'unclaimed', response_data="404")
 
-    executor = AsyncioProgressbarQueueExecutor(logger=logger, in_parallel=3)
-    assert await executor.run(tasks) == [0, 3, 1, 4, 6, 2, 7, 9, 5, 8]
-    assert executor.execution_time > 0.4
-    assert executor.execution_time < 0.5
+    result = await search('claimed', site_dict=sites_dict, logger=Mock())
+    assert result['Message']['status'].is_found() is True
 
-    executor = AsyncioProgressbarQueueExecutor(logger=logger, in_parallel=5)
-    assert await executor.run(tasks) == [0, 3, 6, 1, 4, 7, 9, 2, 5, 8]
-    assert executor.execution_time > 0.3
-    assert executor.execution_time < 0.4
+    result = await search('unclaimed', site_dict=sites_dict, logger=Mock())
+    assert result['Message']['status'].is_found() is False
 
-    executor = AsyncioProgressbarQueueExecutor(logger=logger, in_parallel=10)
-    assert await executor.run(tasks) == [0, 3, 6, 9, 1, 4, 7, 2, 5, 8]
-    assert executor.execution_time > 0.2
-    assert executor.execution_time < 0.3
+
+@pytest.mark.asyncio
+async def test_checking_by_message_negative(httpserver, local_test_db):
+    sites_dict = local_test_db.sites_dict
+
+    site_result_except(httpserver, 'claimed', response_data="")
+    site_result_except(httpserver, 'unclaimed', response_data="user 404")
+
+    result = await search('claimed', site_dict=sites_dict, logger=Mock())
+    assert result['Message']['status'].is_found() is False
+
+    result = await search('unclaimed', site_dict=sites_dict, logger=Mock())
+    assert result['Message']['status'].is_found() is True

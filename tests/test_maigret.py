@@ -1,106 +1,177 @@
 """Maigret main module test functions"""
 import asyncio
+import copy
 
 import pytest
 from mock import Mock
 
-from maigret.maigret import self_check
-from maigret.sites import MaigretDatabase
+from maigret.maigret import self_check, maigret
+from maigret.maigret import (
+    extract_ids_from_page,
+    extract_ids_from_results,
+    extract_ids_from_url,
+)
+from maigret.sites import MaigretSite
+from maigret.result import QueryResult, QueryStatus
 
-EXAMPLE_DB = {
-    'engines': {
+
+RESULTS_EXAMPLE = {
+    'Reddit': {
+        'cookies': None,
+        'parsing_enabled': False,
+        'url_main': 'https://www.reddit.com/',
+        'username': 'Facebook',
     },
-    'sites': {
-        "GooglePlayStore": {
-            "tags": [
-                "global",
-                "us"
-            ],
-            "disabled": False,
-            "checkType": "status_code",
-            "alexaRank": 1,
-            "url": "https://play.google.com/store/apps/developer?id={username}",
-            "urlMain": "https://play.google.com/store",
-            "usernameClaimed": "Facebook_nosuchname",
-            "usernameUnclaimed": "noonewouldeverusethis7"
-        },
-        "Reddit": {
-            "tags": [
-                "news",
-                "social",
-                "us"
-            ],
-            "checkType": "status_code",
-            "presenseStrs": [
-                "totalKarma"
-            ],
-            "disabled": True,
-            "alexaRank": 17,
-            "url": "https://www.reddit.com/user/{username}",
-            "urlMain": "https://www.reddit.com/",
-            "usernameClaimed": "blue",
-            "usernameUnclaimed": "noonewouldeverusethis7"
-        },
-    }
+    'GooglePlayStore': {
+        'cookies': None,
+        'http_status': 200,
+        'is_similar': False,
+        'parsing_enabled': False,
+        'rank': 1,
+        'url_main': 'https://play.google.com/store',
+        'url_user': 'https://play.google.com/store/apps/developer?id=Facebook',
+        'username': 'Facebook',
+    },
 }
 
 
 @pytest.mark.slow
-def test_self_check_db_positive_disable():
+def test_self_check_db_positive_disable(test_db):
     logger = Mock()
-    db = MaigretDatabase()
-    db.load_from_json(EXAMPLE_DB)
-
-    assert db.sites[0].disabled == False
+    assert test_db.sites[0].disabled is False
 
     loop = asyncio.get_event_loop()
-    loop.run_until_complete(self_check(db, db.sites_dict, logger, silent=True))
+    loop.run_until_complete(
+        self_check(test_db, test_db.sites_dict, logger, silent=True)
+    )
 
-    assert db.sites[0].disabled == True
+    assert test_db.sites[0].disabled is True
 
 
 @pytest.mark.slow
-def test_self_check_db_positive_enable():
+def test_self_check_db_positive_enable(test_db):
     logger = Mock()
-    db = MaigretDatabase()
-    db.load_from_json(EXAMPLE_DB)
 
-    db.sites[0].disabled = True
-    db.sites[0].username_claimed = 'Facebook'
-    assert db.sites[0].disabled == True
+    test_db.sites[0].disabled = True
+    test_db.sites[0].username_claimed = 'Facebook'
+    assert test_db.sites[0].disabled is True
 
     loop = asyncio.get_event_loop()
-    loop.run_until_complete(self_check(db, db.sites_dict, logger, silent=True))
+    loop.run_until_complete(
+        self_check(test_db, test_db.sites_dict, logger, silent=True)
+    )
 
-    assert db.sites[0].disabled == False
+    assert test_db.sites[0].disabled is False
 
 
 @pytest.mark.slow
-def test_self_check_db_negative_disabled():
+def test_self_check_db_negative_disabled(test_db):
     logger = Mock()
-    db = MaigretDatabase()
-    db.load_from_json(EXAMPLE_DB)
 
-    db.sites[0].disabled = True
-    assert db.sites[0].disabled == True
+    test_db.sites[0].disabled = True
+    assert test_db.sites[0].disabled is True
 
     loop = asyncio.get_event_loop()
-    loop.run_until_complete(self_check(db, db.sites_dict, logger, silent=True))
+    loop.run_until_complete(
+        self_check(test_db, test_db.sites_dict, logger, silent=True)
+    )
 
-    assert db.sites[0].disabled == True
+    assert test_db.sites[0].disabled is True
 
 
 @pytest.mark.slow
-def test_self_check_db_negative_enabled():
+def test_self_check_db_negative_enabled(test_db):
     logger = Mock()
-    db = MaigretDatabase()
-    db.load_from_json(EXAMPLE_DB)
 
-    db.sites[0].disabled = False
-    db.sites[0].username_claimed = 'Facebook'
-    assert db.sites[0].disabled == False
+    test_db.sites[0].disabled = False
+    test_db.sites[0].username_claimed = 'Facebook'
+    assert test_db.sites[0].disabled is False
 
     loop = asyncio.get_event_loop()
-    loop.run_until_complete(self_check(db, db.sites_dict, logger, silent=True))
+    loop.run_until_complete(
+        self_check(test_db, test_db.sites_dict, logger, silent=True)
+    )
 
-    assert db.sites[0].disabled == False
+    assert test_db.sites[0].disabled is False
+
+
+@pytest.mark.slow
+def test_maigret_results(test_db):
+    logger = Mock()
+
+    username = 'Facebook'
+    loop = asyncio.get_event_loop()
+    results = loop.run_until_complete(
+        maigret(username, site_dict=test_db.sites_dict, logger=logger, timeout=30)
+    )
+
+    assert isinstance(results, dict)
+
+    reddit_site = results['Reddit']['site']
+    assert isinstance(reddit_site, MaigretSite)
+
+    assert reddit_site.json == {
+        'tags': ['news', 'social', 'us'],
+        'checkType': 'status_code',
+        'presenseStrs': ['totalKarma'],
+        'disabled': True,
+        'alexaRank': 17,
+        'url': 'https://www.reddit.com/user/{username}',
+        'urlMain': 'https://www.reddit.com/',
+        'usernameClaimed': 'blue',
+        'usernameUnclaimed': 'noonewouldeverusethis7',
+    }
+
+    del results['Reddit']['site']
+    del results['GooglePlayStore']['site']
+
+    reddit_status = results['Reddit']['status']
+    assert isinstance(reddit_status, QueryResult)
+    assert reddit_status.status == QueryStatus.ILLEGAL
+
+    playstore_status = results['GooglePlayStore']['status']
+    assert isinstance(playstore_status, QueryResult)
+    assert playstore_status.status == QueryStatus.CLAIMED
+
+    del results['Reddit']['status']
+    del results['GooglePlayStore']['status']
+
+    assert results['Reddit'].get('future') is None
+    del results['GooglePlayStore']['future']
+
+    assert results == RESULTS_EXAMPLE
+
+
+def test_extract_ids_from_url(default_db):
+    assert extract_ids_from_url('https://www.reddit.com/user/test', default_db) == {
+        'test': 'username'
+    }
+    assert extract_ids_from_url('https://vk.com/id123', default_db) == {'123': 'vk_id'}
+    assert extract_ids_from_url('https://vk.com/ida123', default_db) == {
+        'ida123': 'username'
+    }
+    assert extract_ids_from_url(
+        'https://my.mail.ru/yandex.ru/dipres8904/', default_db
+    ) == {'dipres8904': 'username'}
+    assert extract_ids_from_url(
+        'https://reviews.yandex.ru/user/adbced123', default_db
+    ) == {'adbced123': 'yandex_public_id'}
+
+
+@pytest.mark.slow
+def test_extract_ids_from_page(test_db):
+    logger = Mock()
+    extract_ids_from_page('https://www.reddit.com/user/test', logger) == {
+        'test': 'username'
+    }
+
+
+def test_extract_ids_from_results(test_db):
+    TEST_EXAMPLE = copy.deepcopy(RESULTS_EXAMPLE)
+    TEST_EXAMPLE['Reddit']['ids_usernames'] = {'test1': 'yandex_public_id'}
+    TEST_EXAMPLE['Reddit']['ids_links'] = ['https://www.reddit.com/user/test2']
+
+    extract_ids_from_results(TEST_EXAMPLE, test_db) == {
+        'test1': 'yandex_public_id',
+        'test2': 'username',
+    }

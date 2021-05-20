@@ -2,6 +2,31 @@
 
 ## [Unreleased]
 
+## [0.2.4] - 2021-05-18
+* cli output report
+* various improvements
+
+## [0.2.3] - 2021-05-12
+* added Yelp and yelp_userid support
+* tags markup stabilization
+* improved errors detection
+
+## [0.2.2] - 2021-05-07
+* improved ids extractors
+* updated sites and engines
+* updates CLI options
+
+## [0.2.1] - 2021-05-02
+* fixed json reports generation bug, added tests
+
+## [0.2.0] - 2021-05-02
+* added `--retries` option
+* added `source` feature for sites' mirrors
+* improved `submit` mode
+* lot of style and logic fixes
+
+## [0.1.20] - 2021-05-02 [YANKED]
+
 ## [0.1.19] - 2021-04-14
 * added `--no-progressbar` option
 * fixed ascii tree bug
