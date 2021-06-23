@@ -33,11 +33,14 @@ from .report import (
     SUPPORTED_JSON_REPORT_FORMATS,
     save_json_report,
     get_plaintext_report,
+    sort_report_by_data_points,
+    save_graph_report,
 )
 from .sites import MaigretDatabase
-from .submit import submit_dialog
+from .submit import Submitter
 from .types import QueryResultWrapper
 from .utils import get_dict_ascii_tree
+from .settings import Settings
 
 
 def notify_about_errors(search_results: QueryResultWrapper, query_notify):
@@ -58,17 +61,6 @@ def notify_about_errors(search_results: QueryResultWrapper, query_notify):
         query_notify.warning(
             'You can see detailed site check errors with a flag `--print-errors`'
         )
-
-
-def extract_ids_from_url(url: str, db: MaigretDatabase) -> dict:
-    results = {}
-    for s in db.sites:
-        result = s.extract_id_from_url(url)
-        if not result:
-            continue
-        _id, _type = result
-        results[_id] = _type
-    return results
 
 
 def extract_ids_from_page(url, logger, timeout=5) -> dict:
@@ -116,7 +108,7 @@ def extract_ids_from_results(results: QueryResultWrapper, db: MaigretDatabase) -
                 ids_results[u] = utype
 
         for url in dictionary.get('ids_links', []):
-            ids_results.update(extract_ids_from_url(url, db))
+            ids_results.update(db.extract_ids_from_url(url))
 
     return ids_results
 
@@ -237,6 +229,26 @@ def setup_arguments_parser():
         dest="proxy",
         default=None,
         help="Make requests over a proxy. e.g. socks5://127.0.0.1:1080",
+    )
+    parser.add_argument(
+        "--tor-proxy",
+        metavar='TOR_PROXY_URL',
+        action="store",
+        default='socks5://127.0.0.1:9050',
+        help="Specify URL of your Tor gateway. Default is socks5://127.0.0.1:9050",
+    )
+    parser.add_argument(
+        "--i2p-proxy",
+        metavar='I2P_PROXY_URL',
+        action="store",
+        default='http://127.0.0.1:4444',
+        help="Specify URL of your I2P gateway. Default is http://127.0.0.1:4444",
+    )
+    parser.add_argument(
+        "--with-domains",
+        action="store_true",
+        default=False,
+        help="Enable (experimental) feature of checking domains on usernames.",
     )
 
     filter_group = parser.add_argument_group(
@@ -410,6 +422,14 @@ def setup_arguments_parser():
         help="Generate a PDF report (general report on all usernames).",
     )
     report_group.add_argument(
+        "-G",
+        "--graph",
+        action="store_true",
+        dest="graph",
+        default=False,
+        help="Generate a graph report (general report on all usernames).",
+    )
+    report_group.add_argument(
         "-J",
         "--json",
         action="store",
@@ -419,6 +439,13 @@ def setup_arguments_parser():
         choices=SUPPORTED_JSON_REPORT_FORMATS,
         help=f"Generate a JSON report of specific type: {', '.join(SUPPORTED_JSON_REPORT_FORMATS)}"
         " (one report per username).",
+    )
+
+    parser.add_argument(
+        "--reports-sorting",
+        default='default',
+        choices=('default', 'data'),
+        help="Method of results sorting in reports (default: in order of getting the result)",
     )
     return parser
 
@@ -468,6 +495,12 @@ async def main():
     if args.tags:
         args.tags = list(set(str(args.tags).split(',')))
 
+    settings = Settings(
+        os.path.join(
+            os.path.dirname(os.path.realpath(__file__)), "resources/settings.json"
+        )
+    )
+
     if args.db_file is None:
         args.db_file = os.path.join(
             os.path.dirname(os.path.realpath(__file__)), "resources/data.json"
@@ -498,9 +531,8 @@ async def main():
     site_data = get_top_sites_for_id(args.id_type)
 
     if args.new_site_to_submit:
-        is_submitted = await submit_dialog(
-            db, args.new_site_to_submit, args.cookie_file, logger
-        )
+        submitter = Submitter(db=db, logger=logger, settings=settings)
+        is_submitted = await submitter.dialog(args.new_site_to_submit, args.cookie_file)
         if is_submitted:
             db.save_to_file(args.db_file)
 
@@ -508,7 +540,12 @@ async def main():
     if args.self_check:
         print('Maigret sites database self-checking...')
         is_need_update = await self_check(
-            db, site_data, logger, max_connections=args.connections
+            db,
+            site_data,
+            logger,
+            max_connections=args.connections,
+            tor_proxy=args.tor_proxy,
+            i2p_proxy=args.i2p_proxy,
         )
         if is_need_update:
             if input('Do you want to save changes permanently? [Yn]\n').lower() in (
@@ -584,6 +621,8 @@ async def main():
             site_dict=dict(sites_to_check),
             query_notify=query_notify,
             proxy=args.proxy,
+            tor_proxy=args.tor_proxy,
+            i2p_proxy=args.i2p_proxy,
             timeout=args.timeout,
             is_parsing_enabled=parsing_enabled,
             id_type=id_type,
@@ -594,9 +633,13 @@ async def main():
             max_connections=args.connections,
             no_progressbar=args.no_progressbar,
             retries=args.retries,
+            check_domains=args.with_domains,
         )
 
         notify_about_errors(results, query_notify)
+
+        if args.reports_sorting == "data":
+            results = sort_report_by_data_points(results)
 
         general_results.append((username, id_type, results))
 
@@ -647,6 +690,11 @@ async def main():
             filename = report_filepath_tpl.format(username=username, postfix='.pdf')
             save_pdf_report(filename, report_context)
             query_notify.warning(f'PDF report on all usernames saved in {filename}')
+
+        if args.graph:
+            filename = report_filepath_tpl.format(username=username, postfix='.html')
+            save_graph_report(filename, general_results, db)
+            query_notify.warning(f'Graph report on all usernames saved in {filename}')
 
         text_report = get_plaintext_report(report_context)
         if text_report:
